@@ -1,0 +1,446 @@
+========================================
+src/extension.ts
+========================================
+import * as vscode from 'vscode';
+import { OllamaService } from './services/ollamaService';
+import { ChatProvider } from './ui/chatProvider';
+
+export function activate(context: vscode.ExtensionContext) {
+    const ollamaService = new OllamaService();
+    const chatProvider = new ChatProvider(context.extensionUri, ollamaService);
+    
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(ChatProvider.viewType, chatProvider)
+    );
+}
+
+export function deactivate() {}
+
+
+========================================
+src/commands/commentHandler.ts
+========================================
+import { OllamaService } from '../services/ollamaService';
+import { JSON_SYSTEM_PROMPT, parseLLMResponse, LLMResponse } from './llmHelpers';
+
+export async function handleComment(textSelection: string, service: OllamaService): Promise<LLMResponse> {
+    const prompt = `
+    Tu es un expert en documentation de code.
+    Ta mission : Ajouter des commentaires pertinents et des docstrings.
+    RÈGLE D'OR : NE CHANGE PAS LA LOGIQUE DU CODE. NE RENOMME RIEN.
+    Renvoie le code complet modifié.
+    
+    ${JSON_SYSTEM_PROMPT}
+    
+    CODE À COMMENTER :
+    ${textSelection}`;
+
+    const response = await service.sendRequest(prompt);
+    if (!response) throw new Error("Pas de réponse du modèle.");
+    
+    return parseLLMResponse(response);
+}
+
+
+========================================
+src/commands/explain.ts
+========================================
+import * as vscode from 'vscode';
+import { OllamaService } from '../services/ollamaService';
+
+export async function explainCommand(service: OllamaService) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+
+    const text = editor.document.getText(editor.selection);
+    if (!text) {
+        vscode.window.showWarningMessage("Sélectionnez du code à expliquer !");
+        return;
+    }
+
+    const response = await service.sendRequest(`Explique ce code brièvement :\n${text}`);
+    if (response) {
+        // Amélioration UX : Afficher dans un canal de sortie ou un panneau dédié serait mieux, 
+        // mais pour l'instant la modal est ok.
+        vscode.window.showInformationMessage(response, { modal: true });
+    }
+}
+
+
+========================================
+src/commands/explainHandler.ts
+========================================
+import { OllamaService } from '../services/ollamaService';
+import { JSON_SYSTEM_PROMPT, parseLLMResponse, LLMResponse } from './llmHelpers';
+
+export async function handleExplain(textSelection: string, service: OllamaService): Promise<LLMResponse> {
+    const prompt = `
+    Tu es un pédagogue expert en programmation.
+    Explique ce code de manière claire et concise.
+    
+    ${JSON_SYSTEM_PROMPT}
+    
+    CODE À EXPLIQUER :
+    ${textSelection}`;
+
+    const response = await service.sendRequest(prompt);
+    if (!response) throw new Error("Pas de réponse du modèle.");
+    
+    return parseLLMResponse(response);
+}
+
+
+========================================
+src/commands/generate.ts
+========================================
+import * as vscode from 'vscode';
+import { OllamaService } from '../services/ollamaService';
+
+export async function generateCommand(service: OllamaService) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+
+    const instruction = editor.document.getText(editor.selection);
+    if (!instruction) {
+        vscode.window.showWarningMessage("Écrivez une instruction et sélectionnez-la !");
+        return;
+    }
+
+    const response = await service.sendRequest(`Génère le code pour : ${instruction}`);
+    if (response) {
+        editor.edit(editBuilder => {
+            editBuilder.replace(editor.selection, response);
+        });
+    }
+}
+
+
+========================================
+src/commands/generateHandler.ts
+========================================
+import { OllamaService } from '../services/ollamaService';
+import { JSON_SYSTEM_PROMPT, parseLLMResponse, LLMResponse } from './llmHelpers';
+
+export async function handleGenerate(instruction: string, textSelection: string, service: OllamaService): Promise<LLMResponse> {
+    let userRequest = "";
+    if (instruction && textSelection) {
+        userRequest = `Instruction: ${instruction}\n\nContexte (Code): ${textSelection}`;
+    } else if (instruction) {
+        userRequest = instruction;
+    } else {
+        userRequest = `Améliore ce code : ${textSelection}`;
+    }
+
+    const prompt = `
+    Tu es un assistant de coding expert.
+    Génère ou modifie le code selon la demande.
+    Renvoie le code complet prêt à être inséré.
+    
+    ${JSON_SYSTEM_PROMPT}
+    
+    DEMANDE : ${userRequest}`;
+
+    const response = await service.sendRequest(prompt);
+    if (!response) throw new Error("Pas de réponse du modèle.");
+    
+    return parseLLMResponse(response);
+}
+
+
+========================================
+src/commands/llmHandler.ts
+========================================
+// src/commands/llmHelpers.ts
+export interface LLMResponse {
+    code?: string;
+    explanation: string;
+}
+
+export function parseLLMResponse(raw: string): LLMResponse {
+    try {
+        const jsonString = raw.replace(/``````/g, '').trim();
+        return JSON.parse(jsonString);
+    } catch {
+        return { explanation: raw }; // Fallback
+    }
+}
+
+export const JSON_SYSTEM_PROMPT = `
+FORMAT DE RÉPONSE ATTENDU (JSON STRICT) :
+{
+    "code": "Le code ici",
+    "explanation": "L'explication ici"
+}
+`;
+
+
+========================================
+src/commands/llmHelpers.ts
+========================================
+export interface LLMResponse {
+    code?: string;
+    explanation: string;
+}
+
+export function parseLLMResponse(raw: string): LLMResponse {
+    try {
+        const jsonString = raw.replace(/``````/g, '').trim();
+        return JSON.parse(jsonString);
+    } catch (e) {
+        // Fallback si le JSON est cassé
+        return { explanation: raw };
+    }
+}
+
+export const JSON_SYSTEM_PROMPT = `
+IMPORTANT : Tu dois répondre UNIQUEMENT au format JSON strict.
+Structure attendue :
+{
+    "code": "Le code complet ici (échappé proprement)",
+    "explanation": "Ton explication ici"
+}
+Ne mets aucun texte avant ou après le JSON.
+`;
+
+
+========================================
+src/services/ollamaService.ts
+========================================
+import * as vscode from 'vscode';
+
+export class OllamaService {
+    
+    private get config() {
+        return vscode.workspace.getConfiguration('llmAssistant');
+    }
+
+    public async sendRequest(prompt: string): Promise<string | null> {
+        const model = this.config.get<string>('model') || 'gpt-oss:120b';
+        const url = this.config.get<string>('url') || 'https://ollama.com';
+        const apiKey = this.config.get<string>('apiKey') || '';
+
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+        try {
+            const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+            const response = await fetch(`${baseUrl}/api/chat`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    model,
+                    messages: [{ role: 'user', content: prompt }],
+                    stream: false,
+                    options: { temperature: 0.3 }
+                })
+            });
+
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+            const data = await response.json() as any;
+            return data.message?.content || null;
+
+        } catch (err) {
+            console.error(err);
+            return null;
+        }
+    }
+}
+
+
+========================================
+src/test/extension.test.ts
+========================================
+import * as assert from 'assert';
+
+// You can import and use all API from the 'vscode' module
+// as well as import your extension to test it
+import * as vscode from 'vscode';
+// import * as myExtension from '../../extension';
+
+suite('Extension Test Suite', () => {
+	vscode.window.showInformationMessage('Start all tests.');
+
+	test('Sample test', () => {
+		assert.strictEqual(-1, [1, 2, 3].indexOf(5));
+		assert.strictEqual(-1, [1, 2, 3].indexOf(0));
+	});
+});
+
+
+========================================
+src/ui/chatProvider.ts
+========================================
+import * as vscode from 'vscode';
+import { OllamaService } from '../services/ollamaService';
+import { handleExplain } from '../commands/explainHandler';
+import { handleComment } from '../commands/commentHandler';
+import { handleGenerate } from '../commands/generateHandler';
+import { LLMResponse } from '../commands/llmHelpers'; // Assure-toi que le chemin est bon (helpers ou llmHelpers)
+
+// Interface pour typer les messages venant du HTML
+interface ChatMessage {
+    type: 'generate' | 'explain' | 'comment';
+    value?: string;
+}
+
+export class ChatProvider implements vscode.WebviewViewProvider {
+    public static readonly viewType = 'llm-chat-view';
+    private _view?: vscode.WebviewView;
+
+    constructor(
+        private readonly _extensionUri: vscode.Uri, 
+        private readonly _service: OllamaService
+    ) {}
+
+    public resolveWebviewView(
+        webviewView: vscode.WebviewView,
+        context: vscode.WebviewViewResolveContext,
+        _token: vscode.CancellationToken,
+    ) {
+        this._view = webviewView;
+        webviewView.webview.options = { enableScripts: true, localResourceRoots: [this._extensionUri] };
+        webviewView.webview.html = this._getHtmlForWebview();
+
+        // Écoute des messages venant de la Webview
+        webviewView.webview.onDidReceiveMessage(async (data) => {
+            // On type la donnée reçue
+            await this.onMessageReceived(data as ChatMessage);
+        });
+    }
+
+    private async onMessageReceived(message: ChatMessage) {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            this.postMessage("❌ Ouvre un fichier d'abord !");
+            return;
+        }
+
+        const textSelection = editor.document.getText(editor.selection);
+        
+        // Validation : Il faut une sélection sauf pour 'generate' si on a une instruction
+        // (Mais handleGenerate gère ça, ici on check juste que si c'est 'explain' ou 'comment', il faut du code)
+        if (message.type !== 'generate' && !textSelection) {
+            this.postMessage("❌ Sélectionne du code d'abord !");
+            return;
+        }
+
+        this.postMessage("⏳ Traitement en cours...");
+
+        try {
+            let result: LLMResponse | undefined;
+            
+            switch (message.type) {
+                case 'explain':
+                    result = await handleExplain(textSelection, this._service);
+                    break;
+                case 'comment':
+                    result = await handleComment(textSelection, this._service);
+                    break;
+                case 'generate':
+                    result = await handleGenerate(message.value || "", textSelection, this._service);
+                    break;
+            }
+
+            if (result) {
+                // Update UI avec l'explication
+                this.postMessage(result.explanation || "Terminé.");
+
+                // Update Editeur avec le code
+                if (result.code && result.code.length > 0) {
+                    editor.edit(editBuilder => {
+                        if (editor.selection.isEmpty) {
+                            editBuilder.insert(editor.selection.active, result.code!);
+                        } else {
+                            editBuilder.replace(editor.selection, result.code!);
+                        }
+                    });
+                }
+            }
+        } catch (e: unknown) {
+            const errorMessage = e instanceof Error ? e.message : String(e);
+            this.postMessage(`❌ Erreur : ${errorMessage}`);
+        }
+    }
+
+    private postMessage(text: string) {
+        this._view?.webview.postMessage({ type: 'addResponse', value: text });
+    }
+
+    private _getHtmlForWebview() {
+        return `<!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body { font-family: var(--vscode-font-family); padding: 10px; color: var(--vscode-foreground); }
+                textarea { width: 100%; height: 80px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px; resize: vertical; font-family: var(--vscode-editor-font-family); }
+                button { width: 100%; margin-top: 8px; padding: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; cursor: pointer; border-radius: 4px; font-weight: 500; }
+                button:hover { background: var(--vscode-button-hoverBackground); }
+                .btn-secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+                .btn-secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+                .separator { margin-top: 15px; margin-bottom: 5px; font-weight: bold; font-size: 0.85em; text-transform: uppercase; opacity: 0.7; }
+                #response { margin-top: 15px; padding-top: 10px; border-top: 1px solid var(--vscode-panel-border); white-space: pre-wrap; font-size: 0.95em; line-height: 1.5; }
+            </style>
+        </head>
+        <body>
+            <div class="separator">Instruction</div>
+            <textarea id="promptInput" placeholder="Ex: Fonction Fibonacci..."></textarea>
+            <button id="btnGenerate">✨ Générer / Modifier</button>
+            <button id="btnExplain" class="btn-secondary">🧠 Expliquer Sélection</button>
+            <button id="btnComment" class="btn-secondary">📝 Commenter Sélection</button>
+            <div id="response"></div>
+            <script>
+                const vscode = acquireVsCodeApi();
+                document.getElementById('btnGenerate').addEventListener('click', () => { vscode.postMessage({ type: 'generate', value: document.getElementById('promptInput').value }); });
+                document.getElementById('btnExplain').addEventListener('click', () => { vscode.postMessage({ type: 'explain' }); });
+                document.getElementById('btnComment').addEventListener('click', () => { vscode.postMessage({ type: 'comment' }); });
+                window.addEventListener('message', event => { if(event.data.type === 'addResponse') document.getElementById('response').innerHTML = '<strong>🤖 Assistant :</strong><br/>' + event.data.value; });
+            </script>
+        </body>
+        </html>`;
+    }
+}
+
+
+========================================
+src/ui/sidebarProvider.ts
+========================================
+import * as vscode from 'vscode';
+
+export class LLMSidebarProvider implements vscode.TreeDataProvider<SidebarItem> {
+    
+    getTreeItem(element: SidebarItem): vscode.TreeItem {
+        return element;
+    }
+
+    getChildren(element?: SidebarItem): Thenable<SidebarItem[]> {
+        if (element) {
+            return Promise.resolve([]); // Pas d'enfants pour l'instant (liste plate)
+        } else {
+            // C'est ici qu'on définit les items de la liste
+            return Promise.resolve([
+                new SidebarItem("Générer du Code", "llm.generate", "Génère le code depuis la sélection", new vscode.ThemeIcon("code")),
+                new SidebarItem("Expliquer le Code", "llm.explain", "Explique la sélection", new vscode.ThemeIcon("comment-discussion")),
+                // Tu pourrais ajouter d'autres commandes ici (ex: Documentation)
+            ]);
+        }
+    }
+}
+
+class SidebarItem extends vscode.TreeItem {
+    constructor(
+        public readonly label: string,
+        public readonly commandId: string,
+        public readonly tooltip: string,
+        public readonly iconPath: vscode.ThemeIcon
+    ) {
+        super(label, vscode.TreeItemCollapsibleState.None);
+        this.tooltip = tooltip;
+        this.command = {
+            command: commandId,
+            title: label
+        };
+    }
+}

@@ -1,0 +1,109 @@
+{
+  "name": "projet-llm-8inf950",
+  "displayName": "projet-llm-8inf950",
+  "description": "Extension VSCode pour 8INF950 par Arthur et Youssef",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.106.1"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "llm-sidebar",
+          "title": "Assistant IA",
+          "icon": "media/robot.svg"
+        }
+      ]
+    },
+    "views": {
+      "llm-sidebar": [
+        {
+          "type": "webview",
+          "id": "llm-chat-view",
+          "name": "Chat Assistant"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "llm.explain",
+        "title": "Expliquer le code"
+      },
+      {
+        "command": "llm.generate",
+        "title": "Générer du code"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "submenu": "llm/context",
+          "group": "navigation",
+          "when": "editorHasSelection"
+        }
+      ],
+      "llm/context": [
+        {
+          "command": "llm.generate",
+          "group": "1_gen"
+        },
+        {
+          "command": "llm.explain",
+          "group": "2_help"
+        }
+      ]
+    },
+    "submenus": [
+      {
+        "id": "llm/context",
+        "label": "🤖 Assistant IA (Arthur & Youssef)"
+      }
+    ],
+    "configuration": {
+      "title": "LLM Assistant (Arthur & Youssef)",
+      "properties": {
+        "llmAssistant.model": {
+          "type": "string",
+          "default": "qwen3-coder:480b",
+          "description": "Modèle utilisé (ex: qwen3-coder:480b ou llama3.2)"
+        },
+        "llmAssistant.url": {
+          "type": "string",
+          "default": "https://ollama.com",
+          "description": "URL de l'API (Cloud ou Localhost)"
+        },
+        "llmAssistant.apiKey": {
+          "type": "string",
+          "default": "9eafe3322eba4331aaea4894379e4c8c.E7NNMFwZuOZgrlDjRo-SY2I2",
+          "description": "Clé API pour le Cloud (si nécessaire)",
+          "scope": "application"
+        }
+      }
+    }
+
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.106.1",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.46.3",
+    "eslint": "^9.39.1",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
